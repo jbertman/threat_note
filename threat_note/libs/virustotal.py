@@ -29,10 +29,14 @@ def vt_domain_lookup(domain):
         r = requests.get(url, params=params, verify=False, proxies=helpers.get_proxy())
         j = json.loads(r.text)
         j['resolutions'] = sorted(j['resolutions'], key=lambda k: k['last_resolved'], reverse=True)
+        # Why at least 20?
+        '''
         if len(j) < 20:
             pass
         else:
             return j
+        '''
+        return j
     except:
         pass
 

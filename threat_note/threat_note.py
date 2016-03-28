@@ -233,7 +233,6 @@ def tags():
                 for row in rows:
                     tmp[row.object] = row.type
                     indicators.append(tmp)
-
         return render_template('tags.html', tags=taglist)
     except Exception as e:
         return render_template('error.html', error=e)
@@ -693,8 +692,9 @@ def objectsummary(uid):
         if row.relationships:
             rellist = row.relationships.split(",")
             for rel in rellist:
-                row = Indicator.query.filter_by(object=rel).first()
-                temprel[row.object] = row.type
+                # Won't this make the 3rd party lookups use the relationship object rather than the original object?
+                row_rel = Indicator.query.filter_by(object=rel).first()
+                temprel[row_rel.object] = row.type
 
         reldata = len(temprel)
         jsonvt = ""
@@ -741,11 +741,14 @@ def objectsummary(uid):
                 shodandata = shodan.shodan(str(row.object))
 
         if settings.whoisinfo == "on":
-            if str(row.type) == "Domain":
-                address = str(whoisdata['city']) + ", " + str(whoisdata['country'])
+            if whoisdata:
+                if str(row.type) == "Domain":
+                    address = str(whoisdata['city']) + ", " + str(whoisdata['country'])
+                else:
+                    address = str(whoisdata['nets'][0]['city']) + ", " + str(
+                        whoisdata['nets'][0]['country'])
             else:
-                address = str(whoisdata['nets'][0]['city']) + ", " + str(
-                    whoisdata['nets'][0]['country'])
+                address = None
         else:
             address = "Information about " + str(row.object)
         return render_template('networkobject.html', records=newdict, jsonvt=jsonvt, whoisdata=whoisdata,
@@ -768,7 +771,8 @@ def threatactorobject(uid):
             rellist = row.relationships.split(",")
             for rel in rellist:
                 reltype = Indicator.query.filter(Indicator.object == rel)
-                temprel[reltype.object] = reltype.type
+                if reltype:
+                    temprel[reltype.object] = reltype.type
 
         reldata = len(temprel)
         return render_template('threatactorobject.html', records=newdict, temprel=temprel, reldata=reldata)
@@ -787,7 +791,8 @@ def relationships(uid):
             temprel = {}
             for rel in rellist:
                 reltype = Indicator.query.filter_by(object=rel).first()
-                temprel[reltype.object] = reltype.type
+                if reltype:
+                    temprel[reltype.object] = reltype.type
         return render_template('addrelationship.html', records=row, indicators=indicators)
     except Exception as e:
         return render_template('error.html', error=e)
@@ -888,7 +893,8 @@ def victimobject(uid):
             rellist = http.relationships.split(",")
             for rel in rellist:
                 reltype = Indicator.query.filter(Indicator.object == rel)
-                temprel[reltype.object] = reltype.type
+                if reltype:
+                    temprel[reltype.object] = reltype.type
 
         reldata = len(temprel)
         jsonvt = ""
@@ -958,7 +964,8 @@ def filesobject(uid):
             rellist = http.relationships.split(",")
             for rel in rellist:
                 reltype = Indicator.query.filter(Indicator.object == rel).first()
-                temprel[reltype.object] = reltype.type
+                if reltype:
+                    temprel[reltype.object] = reltype.type
 
         reldata = len(temprel)
         if settings.vtfile == "on":
@@ -978,30 +985,68 @@ def import_indicators():
     return render_template('import.html', cuckoo_tasks=cuckoo_tasks)
 
 
-@app.route('/download/<uid>', methods=['GET'])
+@app.route('/download/campaigns/<uid>', methods=['GET'])
+@app.route('/download/tags/<uid>', methods=['GET'])
 @login_required
 def download(uid):
-    if uid == 'unknown':
-        uid = ""
-    rows = Indicator.query.filter_by(campaign=uid).all()
-    indlist = []
-    for i in rows:
-        indicator = helpers.row_to_dict(i)
-        for key, value in indicator.iteritems():
-            if value is None or value == "":
-                indicator[key] = '-'
-        indlist.append(indicator)
-    out_file = io.BytesIO()
-    fieldnames = indlist[0].keys()
-    w = csv.DictWriter(out_file, fieldnames=fieldnames)
-    w.writeheader()
-    w.writerows(indlist)
+    if '/download/campaigns/' in request.path:
+        try:
+            if uid == 'Unknown':
+                uid = ""
+            rows = Indicator.query.filter_by(campaign=uid).all()
+            indlist = []
+            for i in rows:
+                indicator = helpers.row_to_dict(i)
+                for key, value in indicator.iteritems():
+                    if value is None or value == "":
+                        indicator[key] = '-'
+                indlist.append(indicator)
+            out_file = io.BytesIO()
+            fieldnames = indlist[0].keys()
+            w = csv.DictWriter(out_file, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerows(indlist)
 
-    response = make_response(out_file.getvalue())
-    response.headers[
-        "Content-Disposition"] = "attachment; filename=" + uid + "-campaign.csv"
-    response.headers["Content-type"] = "text/csv"
-    return response
+            response = make_response(out_file.getvalue())
+            response.headers[
+                "Content-Disposition"] = "attachment; filename=" + uid + "-campaign.csv"
+            response.headers["Content-type"] = "text/csv"
+            return response
+
+        except Exception as e:
+            return render_template('error.html', error=e)
+
+    elif '/download/tags/' in request.path:
+        try:
+            # Grab tags
+            taglist = dict()
+            rows = Indicator.query.distinct(Indicator.tags).all()
+            if rows:
+                for row in rows:
+                    if row.tags:
+                        for tag in row.tags.split(','):
+                            taglist[tag.strip()] = list()
+                # Match indicators to tags
+                del rows, row
+                for tag, indicators in taglist.iteritems():
+                    if tag == uid:
+                        indlist = []
+                        rows = Indicator.query.filter(Indicator.tags.like('%' + tag + '%')).all()
+                        for i in rows:
+                            indicator = helpers.row_to_dict(i)
+                            indlist.append(indicator)
+                        out_file = io.BytesIO()
+                        fieldnames = indlist[0].keys()
+                        w = csv.DictWriter(out_file, fieldnames=fieldnames)
+                        w.writeheader()
+                        w.writerows(indlist)
+                        response = make_response(out_file.getvalue())
+                        response.headers[
+                            "Content-Disposition"] = "attachment; filename=" + uid + "-tags.csv"
+                        response.headers["Content-type"] = "text/csv"
+                        return response
+        except Exception as e:
+            return render_template('error.html', error=e)
 
 
 
